@@ -1,6 +1,4 @@
-input/**/*.pdf
-input/**/*.xlsx
-output/*
+
 !output/.gitkeep
 logs/*
 !logs/.gitkeep
