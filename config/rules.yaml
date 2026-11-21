@@ -1,0 +1,11 @@
+# 보고서 계산·표기 규칙. 고객 답변이 오면 여기만 고치고 다시 실행한다 (D-017).
+# 각 값 옆 주석은 근거(결정 ID / 질문 ID).
+
+issuer: 샘플세무법인            # 요구사항 #8, D-013
+sga_top_n: 5                   # Q-13 답변: 판관비 주요 항목 상위 고정 5개 (D-025)
+expense_increase_pct: 5        # Q-14 답변: 전기 대비 5% 이상 증가 (D-027)
+
+# 조정료청구서 (채점 대상 아님, D-015) — 요율표 미수령
+fee_schedule: null
+cms_date: null
+feedback_date: null

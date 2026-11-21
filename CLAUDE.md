@@ -6,7 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A program that takes **two 세무조정계산서 PDFs for the same company (전기 · 당기)** and produces a **법인세 분석 보고서 PDF** (the only graded output) plus a 조정료청구서 (not graded). Work proceeds in rounds 1차–4차; each round brings new input files (other companies, reordered forms, missing pages, possibly scanned PDFs) and the **same program is extended**, not rewritten.
 
-Current state: planning scaffold only. `src/` and `config/` are empty, there is no tech stack, build, lint, or test setup yet, and it is not a git repository. SPEC §10 defers the choice of PDF parsing and rendering libraries until the input PDFs have been checked (text vs. scan). When you add a stack, add its run and test commands here.
+Current state: round 1 materials read and specified (SPEC v0.2). `src/` and `config/` are still empty. Inputs are text PDFs (no OCR needed in round 1). Parsing approach is decided in `docs/DECISIONS.md` D-016: **kordoc** (`.claude/skills/kordoc/`, run `npx -y kordoc@4.25.2 …`) for Excel, form discovery and evidence (its JSON blocks carry `pageNumber`), plus a layout-text line parser (`pdftotext -layout` / pdfplumber) for the 결산 재무상태표·손익계산서 numbers, because kordoc merges those statements' labels and amounts into single `<br>` cells. Converted Markdown is in `input/_parsed/` (whole file + per-page `_pages/pNNN.md`). Stack (D-028): Python 3.11 + uv. Code is in `src/ff_report/` (`extract.py` → `analysis.py` → `render_pdf.py` / `render_xlsx.py` / `charts.py` / `invoice.py`). Rules are in `config/rules.yaml`.
+
+```bash
+uv sync
+uv run ff-report --prev input/round1/샘플컴퍼니_2024_세무조정계산서.pdf --curr input/round1/샘플컴퍼니_2025_세무조정계산서.pdf
+# → output/: 보고서 PDF (graded), Excel, 조정료청구서 초안, 근거.json, charts/
+```
+The run prints check results and the «확인 필요» count. Do not submit while that count is above 0.
 
 ## Non-negotiable rules (from README / SPEC)
 
@@ -27,11 +34,13 @@ Checks to run before building the report (FR-6). A mismatch flips the value to �
 - 영업이익 = 매출총이익 − 판관비
 - Σ 판관비 세부 = 판관비 합계
 
-The prior-year value can come from the 전기 PDF or from the prior-year column of the 당기 PDF. Which one to use is unresolved (Q-05). Record both and warn when they differ.
+Prior-year values come from the 전기 PDF and are cross-checked against the 당기 PDF's prior-year column (D-004); in round 1 every item matches. Further checks are listed in SPEC FR-4, including 결손금 발생액 vs 세무상 결손금, which already mismatches by 129,800원 in round 1 (FORM_MAP F-01, Q-05).
 
 ## Report sections
 
-R-1 주요 지표 비교 (매출액 · 영업이익 · 당기순이익 · 부채비율), R-2 그래프, R-3 요약 코멘트, R-4 요약 손익 비교, R-5 판관비 주요 항목, R-6 세무조정 · 재무제표 특이사항. `docs/FORM_MAP.md` §2 maps each source form to the section it feeds.
+Confirmed by the client (Q-01, D-019): **I. 기본정보 → II. 표준재무제표 (재무상태표, 손익계산서) → III. 법인세 신고상황 → IV. 이월결손금 → V. 소득금액조정 → VI. 공제·감면세액 → VII. 요약 코멘트 → VIII. 재무제표 주요 특이사항**, preceded by a 요약 카드 of the four key figures. Statement amounts come from the 표준재무제표 with their codes (D-020). 요약 카드 amounts use «1.93억원» at 1억 or more and «4,900만원» below, rounded to 0.01억 (D-021). A loss turning into a profit is shown as «흑자전환» (D-022). The 출력 예시 Excel is a layout reference only.
+
+Ask the client only questions that change graded numbers or sections. The client UI flags other questions as «해당 문제에 필요 없는 질문입니다». Decide formatting yourself and log it in DECISIONS (D-023).
 
 Format requirements that grading depends on (SPEC §6):
 - Company name, 사업연도, and item names are visible.
@@ -45,6 +54,7 @@ Format requirements that grading depends on (SPEC §6):
 - `docs/SPEC.md`: requirements with IDs (FR-x, NFR-x, R-x). Fill in `TBD`s as inputs are read, and link each one to a question ID.
 - `docs/FORM_MAP.md`: which value lives in which form, page, and label for each file, including whether the 2025 PDF's prior-year column matches the 2024 PDF.
 - `docs/QUESTIONS.md`: client question log. **Never delete or rewrite an original question**; append below it. Classify each answer as `답변 있음` / `불명확·충돌` / `답변 없음`. When an answer arrives, update `config/` and SPEC and log it in «답변 반영 이력».
+- `docs/DECISIONS.md`: decision log D-001… with status 확정(자료/요구사항/고객) · 설계 · 잠정. Never delete a decision; supersede it with a new ID.
 - `docs/ROUNDS.md`: per-round checklist, submission log, and grader feedback. Resubmission is allowed only 2 minutes after the previous submission.
 
 ## Layout notes
