@@ -28,7 +28,8 @@ def setup_font(font_dir: Path):
 
 
 def _mil(v):
-    return v / 1_000_000
+    from .model import is_na
+    return float("nan") if is_na(v) else v / 1_000_000
 
 
 def _finish(fig, ax, path, title, unit):
@@ -53,6 +54,10 @@ def grouped(path, title, labels, prev, cur, py, cy, unit="(단위: 백만원)"):
     for bars in (b1, b2):
         for b in bars:
             h = b.get_height()
+            if h != h:  # NaN = 확인 필요
+                ax.annotate("확인 필요", (b.get_x() + b.get_width() / 2, 0), ha="center", va="bottom", fontsize=7,
+                            color=INK2, xytext=(0, 2), textcoords="offset points", rotation=90)
+                continue
             ax.annotate(f"{h:,.1f}", (b.get_x() + b.get_width() / 2, h), ha="center",
                         va="bottom" if h >= 0 else "top", fontsize=7.5, color=INK, xytext=(0, 2 if h >= 0 else -2),
                         textcoords="offset points")
@@ -69,8 +74,9 @@ def hbar_pair(path, title, labels, prev, cur, py, cy, unit="(단위: 백만원)"
     ax.barh([i + h / 2 + 0.01 for i in y], [_mil(v) for v in prev], h, color=PREV_C, label=f"{py}년")
     ax.barh([i - h / 2 - 0.01 for i in y], [_mil(v) for v in cur], h, color=CUR_C, label=f"{cy}년")
     for i, (a, b) in zip(y, zip(prev, cur)):
-        ax.text(_mil(a), i + h / 2, f" {_mil(a):,.1f}", va="center", fontsize=7.5, color=INK)
-        ax.text(_mil(b), i - h / 2, f" {_mil(b):,.1f}", va="center", fontsize=7.5, color=INK)
+        for v, off in ((_mil(a), h / 2), (_mil(b), -h / 2)):
+            ax.text(0 if v != v else v, i + off, " 확인 필요" if v != v else f" {v:,.1f}", va="center", fontsize=7.5,
+                    color=INK2 if v != v else INK)
     ax.set_yticks(y, labels)
     ax.legend(frameon=False, loc="lower right", fontsize=8)
     ax.margins(x=0.15)
@@ -80,8 +86,15 @@ def hbar_pair(path, title, labels, prev, cur, py, cy, unit="(단위: 백만원)"
 
 
 def composition(path, title, labels, shares):
-    """판관비 구성비(%) — 한 계열이라 범례 없이 막대 끝에 % 표기."""
+    """판관비 구성비(%) — 한 계열이라 범례 없이 막대 끝에 % 표기. 합계가 확인 필요면 그리지 않고 안내만."""
+    from .model import is_na
     fig, ax = plt.subplots(figsize=(7.2, 3.2))
+    if any(is_na(x) or x is None for x in shares) or not shares:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "판매비와관리비 합계가 확인 필요라 구성비를 계산하지 않았습니다 (보류)", ha="center", va="center",
+                fontsize=10, color=INK2, transform=ax.transAxes)
+        _finish(fig, ax, path, title, "")
+        return
     y = list(range(len(labels)))[::-1]
     ax.barh(y, shares, 0.55, color=CUR_C)
     for i, s in zip(y, shares):
@@ -106,7 +119,7 @@ def make_all(rp, out_dir: Path, font_dir: Path) -> dict[str, Path]:
             [g(p, 1), g(p, 66), g(p, 129), g(p, 219)], [g(c, 1), g(c, 66), g(c, 129), g(c, 219)], py, cy)
     II = rp.sections["II"]
     top = II["sga_top"]
-    rest = sum(s["comp_cur"] for s in II["sga_all"][len(top):])
+    rest = sum(s["comp_cur"] for s in II["sga_all"][len(top):] if s["comp_cur"] is not None)
     files["comp"] = out_dir / "chart2_판관비구성비.png"
     composition(files["comp"], f"2. 판관비 구성비 ({cy}년)", [s["name"] for s in top] + ["기타"],
                 [s["comp_cur"] for s in top] + [rest])

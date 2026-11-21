@@ -78,6 +78,10 @@ def table(header, rows, widths, num_cols=(), bold_rows=()):
     ]
     for r in bold_rows:
         style.append(("BACKGROUND", (0, r + 1), (-1, r + 1), colors.HexColor("#f8f7f5")))
+    for ri, r in enumerate(rows, start=1):  # 확인 필요 칸 강조
+        for ci, v in enumerate(r):
+            if "확인 필요" in str(v):
+                style.append(("BACKGROUND", (ci, ri), (ci, ri), colors.HexColor("#fdf1ea")))
     t.setStyle(TableStyle(style))
     return t
 
@@ -188,6 +192,9 @@ def render(rp, out: Path, font_dir: Path, charts: dict[str, Path], issuer: str):
     E.append(table(hdr, fs_rows(II["pl"]), wid, num_cols=(2, 3, 4, 5), bold_rows=(0, 4, 9)))
     E.append(src_note(prev.pl.get(1), cur.pl.get(1)))
 
+    for fl in rp.ev.flags:
+        if fl["섹션"] == "II":
+            E.append(P("※ 차이 표시: " + fl["내용"], "flag"))
     E.append(P("(3) 재무비율", "h2"))
     rr = []
     for k, unit, std in RATIO_META:
@@ -319,5 +326,14 @@ def render(rp, out: Path, font_dir: Path, charts: dict[str, Path], issuer: str):
     E.append(P("부록. 검산 결과", "h1"))
     E.append(table(["검산", "결과", "내용"], [[c["검산"], c["결과"], c["내용"]] for c in rp.ev.checks],
                    [W * 0.34, W * 0.1, W * 0.56]))
-    E.append(P("불일치 항목은 숫자를 고치지 않고 원문 값을 그대로 쓰며, 해당 섹션에 차이를 표시합니다.", "note"))
+    E.append(P("불일치 항목은 숫자를 고치지 않고 원문 값을 그대로 쓰며, 해당 섹션에 차이를 표시합니다. "
+               "«보류»는 확인 필요 값이 섞여 검산하지 않은 항목입니다.", "note"))
+    if rp.ev.warnings:
+        E.append(P("부록. 확인 필요 · 경고 목록", "h1"))
+        E.append(P("PDF에 회색으로 가려진 칸, 합계가 빈칸인 필수값, 서식 간 숫자 차이를 기록했습니다. 확인 필요 값은 0으로 넣거나 "
+                   "다른 서식에서 가져오지 않았고, 그 값에 의존하는 계산만 보류했습니다.", "note"))
+        rows = [[w["구분"], f"{w['연도']}", f"{w['서식']} p{w['페이지']}", w["항목"],
+                 f"{w['표시값']:,}" if isinstance(w["표시값"], int) else str(w["표시값"]), w["내용"]] for w in rp.ev.warnings]
+        E.append(table(["구분", "연도", "서식·페이지", "항목", "표시값", "내용"], rows,
+                       [W * 0.12, W * 0.06, W * 0.17, W * 0.16, W * 0.11, W * 0.38]))
     doc.build(E, onFirstPage=on_page, onLaterPages=on_page)

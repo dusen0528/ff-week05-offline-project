@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from .extract import YearData
-from .model import CONFIRMED, NEEDS_CHECK, Evidence, Value
+from .model import CONFIRMED, NA, NEEDS_CHECK, Evidence, Value, div, is_na
 
 # 출력 예시 Excel의 표준재무제표 행 (코드, 표시명)
 BS_ROWS = [
@@ -22,15 +23,20 @@ PL_ROWS = [
 ]
 
 
-def g(d: dict, code) -> int:
+def g(d: dict, code):
+    """코드 값. 서식에 그 코드가 없으면 0, 확인 필요(회색·빈 합계)면 NA."""
     v = d.get(code)
-    return v.value if v is not None and isinstance(v.value, int) else 0
+    if v is None:
+        return 0
+    if v.status == NEEDS_CHECK or v.value is None:
+        return NA
+    return v.value if isinstance(v.value, (int, float)) else 0
 
 
 def change(prev: float | None, cur: float | None) -> dict:
     """증감액·증감률·표기 (D-022)."""
-    if prev is None or cur is None:
-        return {"diff": None, "rate": None, "label": "확인 필요"}
+    if is_na(prev, cur):
+        return {"diff": NA, "rate": None, "label": "확인 필요"}
     diff = cur - prev
     if prev < 0 <= cur and cur > 0:
         return {"diff": diff, "rate": None, "label": "흑자전환"}
@@ -45,6 +51,8 @@ def change(prev: float | None, cur: float | None) -> dict:
 
 def debt_ratio(bs: dict) -> dict:
     liab, eq = g(bs, 333), g(bs, 382)
+    if is_na(liab, eq):
+        return {"value": NA, "label": "확인 필요", "impaired": False}
     if eq <= 0:
         return {"value": liab / eq * 100 if eq else None, "label": "자본잠식", "impaired": True}
     return {"value": liab / eq * 100, "label": None, "impaired": False}
@@ -59,9 +67,13 @@ class Report:
     sections: dict = field(default_factory=dict)
 
 
-def build(prev: YearData, cur: YearData, rules: dict) -> Report:
+def build(prev: YearData, cur: YearData, rules: dict, answers: dict | None = None) -> Report:
+    from .validate import apply_answers, validate
+
     rp = Report(prev, cur, rules)
     ev = rp.ev
+    apply_answers(ev, {prev.year: prev, cur.year: cur}, answers)
+    validate(ev, prev, cur)
     for y in (prev, cur):
         for d in (y.bs, y.pl):
             for v in d.values():
@@ -88,6 +100,11 @@ def build(prev: YearData, cur: YearData, rules: dict) -> Report:
 
 
 # ------------------------------------------------------------------ 검산
+def _eq(ev, name, left, right, detail):
+    """left == right 검산. 확인 필요 값이 섞이면 '보류'."""
+    return ev.check(name, (left == right) if not is_na(left, right) else None, detail, left, right)
+
+
 def _checks(rp: Report):
     ev, prev, cur = rp.ev, rp.prev, rp.cur
     ok = ev.check("같은 회사", prev.info["사업자등록번호"].value == cur.info["사업자등록번호"].value,
@@ -97,29 +114,46 @@ def _checks(rp: Report):
     ev.check("연속 사업연도", cur.year - prev.year == 1, f"{prev.year} → {cur.year}")
     for y in (prev, cur):
         bs, pl = y.bs, y.pl
-        ev.check(f"{y.year} 자산=부채+자본", g(bs, 228) == g(bs, 333) + g(bs, 382),
-                 f"{g(bs,228):,} = {g(bs,333):,} + {g(bs,382):,}")
-        ev.check(f"{y.year} 매출총손익", g(pl, 66) == g(pl, 1) - g(pl, 35), f"{g(pl,66):,} = {g(pl,1):,} − {g(pl,35):,}")
-        ev.check(f"{y.year} 영업손익", g(pl, 129) == g(pl, 66) - g(pl, 67), f"{g(pl,129):,} = {g(pl,66):,} − {g(pl,67):,}")
-        ev.check(f"{y.year} 세전손익", g(pl, 217) == g(pl, 129) + g(pl, 130) - g(pl, 179),
-                 f"{g(pl,217):,} = {g(pl,129):,} + {g(pl,130):,} − {g(pl,179):,}")
-        ev.check(f"{y.year} 당기순손익", g(pl, 219) == g(pl, 217) - g(pl, 218), f"{g(pl,219):,} = {g(pl,217):,} − {g(pl,218):,}")
-        s = sum(r["cur"] for r in y.sga)
-        ev.check(f"{y.year} 판관비 세부 합계(결산서)", s == g(pl, 67), f"{s:,} vs 표준 {g(pl,67):,}")
-        ev.check(f"{y.year} 결산서 당기순손익 = 별지3 ①01", g(pl, 219) == g(y.tax, "01"), f"{g(pl,219):,} / {g(y.tax,'01'):,}")
+        _eq(ev, f"{y.year} 자산=부채+자본", g(bs, 228), g(bs, 333) + g(bs, 382),
+            f"{g(bs,228):,} = {g(bs,333):,} + {g(bs,382):,}")
+        _eq(ev, f"{y.year} 매출총손익", g(pl, 66), g(pl, 1) - g(pl, 35), f"{g(pl,66):,} = {g(pl,1):,} − {g(pl,35):,}")
+        _eq(ev, f"{y.year} 영업손익", g(pl, 129), g(pl, 66) - g(pl, 67), f"{g(pl,129):,} = {g(pl,66):,} − {g(pl,67):,}")
+        _eq(ev, f"{y.year} 세전손익", g(pl, 217), g(pl, 129) + g(pl, 130) - g(pl, 179),
+            f"{g(pl,217):,} = {g(pl,129):,} + {g(pl,130):,} − {g(pl,179):,}")
+        _eq(ev, f"{y.year} 당기순손익", g(pl, 219), g(pl, 217) - g(pl, 218), f"{g(pl,219):,} = {g(pl,217):,} − {g(pl,218):,}")
+        sga = sga_items(y)
+        tot = sum(r["value"] for r in sga)
+        _eq(ev, f"{y.year} 판관비 세부 합계", tot, g(pl, 67), f"세부 합 {tot:,} / 판관비 {g(pl,67):,}")
+        _eq(ev, f"{y.year} 표준손익 당기순손익 = 별지3 ①01", g(pl, 219), g(y.tax, "01"), f"{g(pl,219):,} / {g(y.tax,'01'):,}")
         if g(pl, 218):
-            ev.check(f"{y.year} 법인세비용 = 법인세 + 지방소득세", g(pl, 218) == g(y.tax, "30") + (y.local_tax.value or 0),
-                     f"{g(pl,218):,} = {g(y.tax,'30'):,} + {y.local_tax.value or 0:,}")
-    # 당기 PDF 전기 열 = 전기 PDF 당기 값 (D-004)
-    pairs = [("자산총계", prev.bs, 228), ("부채총계", prev.bs, 333), ("자본총계", prev.bs, 382)]
-    for label, d, code in pairs:
-        pv = cur.settle_bs_prev.get(label)
-        if pv is not None:
-            ev.check(f"전기 열 대조: {label}", pv == g(d, code), f"당기 PDF 전기 열 {pv:,} / 전기 PDF {g(d,code):,}")
-    for label, code in [("매출액", 1), ("판매비와관리비", 67), ("당기순이익", 219), ("당기순손실", 219)]:
-        pv = next((v for k, v in cur.settle_pl_prev.items() if k.startswith(label)), None)
-        if pv is not None:
-            ev.check(f"전기 열 대조: {label}", pv == g(prev.pl, code), f"당기 PDF 전기 열 {pv:,} / 전기 PDF {g(prev.pl,code):,}")
+            lt = y.local_tax.value if y.local_tax.value is not None else NA
+            _eq(ev, f"{y.year} 법인세비용 = 법인세 + 지방소득세", g(pl, 218), g(y.tax, "30") + lt,
+                f"{g(pl,218):,} = {g(y.tax,'30'):,} + {lt:,}")
+
+
+# ------------------------------------------------------------------ 판관비 (표준손익계산서 코드, D-030)
+SGA_TOP_CODES = [68, 74, 78, 79, 80, 81, 85, 86, 87, 90, 91, 92, 93, 94, 95, 96, 97, 98, 101, 104, 107, 108, 109,
+                 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 220, 124]
+
+
+def sga_items(y: YearData) -> list[dict]:
+    """판관비 대분류 계정 (표준손익계산서). '기타(124)'는 결산서에서 같은 금액 계정을 찾아 이름을 붙인다."""
+    out = []
+    settle = {r["label"]: r["cur"] for r in y.sga if r.get("cur") is not None}
+    for code in SGA_TOP_CODES:
+        v = y.pl.get(code)
+        if v is None:
+            continue
+        val = g(y.pl, code)
+        if val == 0:
+            continue
+        name = re.sub(r"^\d+\.", "", v.label.split(" (코드")[0]).strip()
+        name = re.sub(r"\(.*?\)$", "", name) or name
+        if code == 124:
+            match = [k for k, a in settle.items() if a == val]
+            name = f"기타({match[0]})" if len(match) == 1 else "기타"
+        out.append({"code": code, "name": name, "value": val, "src": v})
+    return out
 
 
 # ------------------------------------------------------------------ 요약 카드
@@ -142,26 +176,20 @@ def _card(rp: Report) -> list[dict]:
 # ------------------------------------------------------------------ II
 def _ratios(y: YearData, prev_bs: dict | None) -> dict:
     bs, pl = y.bs, y.pl
-    res = {}
-    dr = debt_ratio(bs)
-    res["부채비율"] = dr
+    res = {"부채비율": debt_ratio(bs)}
     cl = g(bs, 229)
-    res["유동비율"] = {"value": g(bs, 1) / cl * 100 if cl else None}
-    res["당좌비율"] = {"value": g(bs, 2) / cl * 100 if cl else None}
-    ta = g(bs, 228)
-    res["총자산세전순이익률"] = {"value": g(pl, 217) / ta * 100 if ta else None}
-    res["영업이익률"] = {"value": g(pl, 129) / g(pl, 1) * 100 if g(pl, 1) else None}
-    open_ta = g(prev_bs, 228) if prev_bs else None
-    open_eq = g(prev_bs, 382) if prev_bs else None
-    if open_ta is None:
-        res["총자산회전율"] = {"value": None, "note": "기초 자료 없음"}
-        res["자기자본회전율"] = {"value": None, "note": "기초 자료 없음"}
+    res["유동비율"] = {"value": _pct(g(bs, 1), cl)}
+    res["당좌비율"] = {"value": _pct(g(bs, 2), cl)}
+    res["총자산세전순이익률"] = {"value": _pct(g(pl, 217), g(bs, 228))}
+    res["영업이익률"] = {"value": _pct(g(pl, 129), g(pl, 1))}
+    if prev_bs is None:
+        res["총자산회전율"] = {"value": None}
+        res["자기자본회전율"] = {"value": None}
     else:
-        avg_ta = (open_ta + ta) / 2
-        avg_eq = (open_eq + g(bs, 382)) / 2
-        res["총자산회전율"] = {"value": g(pl, 1) / avg_ta if avg_ta > 0 else None}
-        res["자기자본회전율"] = {"value": g(pl, 1) / avg_eq if avg_eq > 0 else None,
-                            "note": "평균 자기자본 0 이하" if avg_eq <= 0 else ""}
+        avg_ta = (g(prev_bs, 228) + g(bs, 228)) / 2
+        avg_eq = (g(prev_bs, 382) + g(bs, 382)) / 2
+        res["총자산회전율"] = {"value": div(g(pl, 1), avg_ta) if not (avg_ta is not NA and avg_ta <= 0) else None}
+        res["자기자본회전율"] = {"value": div(g(pl, 1), avg_eq) if not (avg_eq is not NA and avg_eq <= 0) else None}
     return res
 
 
@@ -173,9 +201,8 @@ RATIO_META = [("부채비율", "%", "200이하"), ("유동비율", "%", "130이�
 def _section2(rp: Report) -> dict:
     prev, cur = rp.prev, rp.cur
     # 전기의 기초 = 전기 PDF 결산 재무상태표 전기 열 (첫 사업연도면 0)
-    prev_open = {228: _V(prev.settle_bs_prev.get("자산총계", 0)), 382: _V(prev.settle_bs_prev.get("자본총계", 0))}
-    if "자산총계" not in prev.settle_bs_prev:  # 결산서 전기 열에 합계 줄이 없으면 구성 항목 합
-        prev_open = {228: _V(0), 382: _V(0)}
+    po = prev.settle_bs_prev
+    prev_open = ({228: _V(po["자산총계"]), 382: _V(po["자본총계"])} if "자산총계" in po and "자본총계" in po else None)
     bs = [{"code": c, "name": n, "prev": g(prev.bs, c), "cur": g(cur.bs, c),
            "src_prev": prev.bs.get(c), "src_cur": cur.bs.get(c)} for c, n in BS_ROWS]
     pl = [{"code": c, "name": n, "prev": g(prev.pl, c), "cur": g(cur.pl, c),
@@ -189,23 +216,31 @@ def _section2(rp: Report) -> dict:
              ("영업외손익", oi), ("법인세차감전손익", lambda p: g(p, 217)), ("법인세비용", lambda p: g(p, 218)),
              ("당기순이익", lambda p: g(p, 219))]
     summary = [{"item": n, "prev": f(prev.pl), "cur": f(cur.pl), **change(f(prev.pl), f(cur.pl))} for n, f in items]
-    # 판관비 (결산서 계정명, D-025)
-    prev_map = {r["label"]: r["cur"] for r in prev.sga}
+    # 판관비 (표준손익계산서 대분류, D-030). 순서는 당기 금액 내림차순, 당기 확인 필요 값은 맨 뒤.
+    pm = {r["code"]: r for r in sga_items(prev)}
+    cm = {r["code"]: r for r in sga_items(cur)}
     sga = []
-    for r in cur.sga:
-        pv = prev_map.get(r["label"], r["prev"] or 0)
-        sga.append({"name": r["label"], "prev": pv, "cur": r["cur"], **change(pv, r["cur"]),
-                    "share_prev": pv / g(prev.pl, 1) * 100 if g(prev.pl, 1) else None,
-                    "share_cur": r["cur"] / g(cur.pl, 1) * 100 if g(cur.pl, 1) else None,
-                    "comp_cur": r["cur"] / g(cur.pl, 67) * 100 if g(cur.pl, 67) else None,
-                    "page_cur": r["page"]})
-    for name, pv in prev_map.items():  # 전기에만 있는 계정
-        if name not in {s["name"] for s in sga}:
-            sga.append({"name": name, "prev": pv, "cur": 0, **change(pv, 0), "share_prev": pv / g(prev.pl, 1) * 100,
-                        "share_cur": 0.0, "comp_cur": 0.0, "page_cur": None})
-    sga.sort(key=lambda r: -r["cur"])
+    for code in list(cm) + [c for c in pm if c not in cm]:
+        c = cm.get(code)
+        p = pm.get(code)
+        pv = p["value"] if p else 0
+        cv = c["value"] if c else 0
+        name = (c or p)["name"]
+        if c and p and c["name"] != p["name"] and code == 124:
+            name = c["name"] if c["name"] != "기타" else p["name"]
+        sga.append({"code": code, "name": name, "prev": pv, "cur": cv, **change(pv, cv),
+                    "share_prev": _pct(pv, g(prev.pl, 1)), "share_cur": _pct(cv, g(cur.pl, 1)),
+                    "comp_cur": _pct(cv, g(cur.pl, 67)), "page_cur": (c or p)["src"].page,
+                    "src": (c or p)["src"]})
+    sga.sort(key=lambda r: (is_na(r["cur"]), -(r["cur"] if not is_na(r["cur"]) else 0)))
     top_n = rp.rules["sga_top_n"]
-    return {"bs": bs, "pl": pl, "ratios": ratios, "summary": summary, "sga_all": sga, "sga_top": sga[:top_n]}
+    top = [r for r in sga if not is_na(r["cur"])][:top_n]
+    return {"bs": bs, "pl": pl, "ratios": ratios, "summary": summary, "sga_all": sga, "sga_top": top}
+
+
+def _pct(a, b):
+    r = div(a, b)
+    return r * 100 if r not in (None, NA) else r
 
 
 def _V(x):
@@ -220,7 +255,8 @@ def _section3(rp: Report) -> list[dict]:
         rows.append({"item": name, "prev": fp(rp.prev), "cur": fc(rp.cur), "kind": kind})
 
     t = lambda code: (lambda y: g(y.tax, code))
-    r("매출액(수입금액)", lambda y: y.revenue.value, lambda y: y.revenue.value)
+    rev = lambda y: y.revenue.value if y.revenue.status == CONFIRMED and y.revenue.value is not None else NA
+    r("매출액(수입금액)", lambda y: rev(y), lambda y: rev(y))
     r("매출총이익", lambda y: g(y.pl, 66), lambda y: g(y.pl, 66))
     r("영업이익", lambda y: g(y.pl, 129), lambda y: g(y.pl, 129))
     r("당기순손익", t("01"), t("01"))
@@ -238,12 +274,18 @@ def _section3(rp: Report) -> list[dict]:
     r("총부담세액", t("21"), t("21"))
     r("기납부세액", t("28"), t("28"))
     r("차감납부할세액", lambda y: g(y.tax, "46") or g(y.tax, "30"), lambda y: g(y.tax, "46") or g(y.tax, "30"))
-    r("법인지방소득세", lambda y: y.local_tax.value, lambda y: y.local_tax.value)
+    lt = lambda y: y.local_tax.value if y.local_tax.value is not None else NA
+    r("법인지방소득세", lt, lt)
 
     def ratio(num, den):
-        return lambda y: (num(y) / den(y) * 100) if den(y) and den(y) > 0 and num(y) is not None else None
+        def f(y):
+            n, d = num(y), den(y)
+            if is_na(n, d):
+                return NA
+            return n / d * 100 if d > 0 else None
+        return f
 
-    rev = lambda y: y.revenue.value or 0
+    rev = lambda y: y.revenue.value if y.revenue.status == CONFIRMED and y.revenue.value is not None else NA
     r("소득률", ratio(t("06"), rev), ratio(t("06"), rev), "pct")
     r("매출총이익률", ratio(lambda y: g(y.pl, 66), lambda y: g(y.pl, 1)), ratio(lambda y: g(y.pl, 66), lambda y: g(y.pl, 1)), "pct")
     r("영업이익률", ratio(lambda y: g(y.pl, 129), lambda y: g(y.pl, 1)), ratio(lambda y: g(y.pl, 129), lambda y: g(y.pl, 1)), "pct")
@@ -259,17 +301,17 @@ def _section4(rp: Report) -> dict:
     rows, notes = [], []
     remaining = used
     for v in cur.losses:
-        dec = min(v.value, remaining)
-        remaining -= dec
+        dec = NA if is_na(remaining) else min(v.value, remaining)
+        remaining = remaining - dec
         yymm = v.item[v.item.find("(") + 1:v.item.find(")")].replace("-", "")[:6]
         rows.append({"year": yymm, "occur": v.value, "decrease": dec, "balance": v.value - dec, "src": v})
     # 발생액 vs 그 해 세무상 결손금 (FR-4.7)
     for row in rows:
         if row["year"][:4] == str(prev.year):
             tax_loss = -g(prev.tax, "06") if g(prev.tax, "06") < 0 else 0
-            ok = rp.ev.check("결손금 발생액 = 전기 각사업연도 결손금", row["occur"] == tax_loss,
-                             f"자본금과적립금조정명세서(갑) {row['occur']:,} / {prev.year} 세액조정계산서 ⑥ {tax_loss:,}")
-            if not ok:
+            ok = _eq(rp.ev, "결손금 발생액 = 전기 각사업연도 결손금", row["occur"], tax_loss,
+                     f"자본금과적립금조정명세서(갑) {row['occur']:,} / {prev.year} 세액조정계산서 ⑥ {tax_loss:,}")
+            if ok is False:
                 diff = row["occur"] - tax_loss
                 note = (f"{prev.year}년 손익계산서·법인세 과세표준 및 세액조정계산서상 결손금은 {tax_loss:,}원으로, "
                         f"자본금과적립금조정명세서(갑) 발생액 {row['occur']:,}원과 {abs(diff):,}원 차이가 있습니다 "
@@ -285,13 +327,17 @@ def _section6(rp: Report) -> dict:
     cur = rp.cur
     total = sum(v.value for v in cur.reductions)
     form_total = g(cur.tax, "17") + g(cur.tax, "19")
-    rp.ev.check("공제감면 합계 = 별지3 ⑰+⑲", total == form_total, f"신청서 {total:,} / 별지3 {form_total:,}")
+    _eq(rp.ev, "공제감면 합계 = 별지3 ⑰+⑲", total, form_total, f"신청서 {total:,} / 별지3 {form_total:,}")
     return {"rows": cur.reductions, "total": total, "form_total": form_total}
 
 
 # ------------------------------------------------------------------ VIII 재무제표 주요 특이사항 (D-026)
 def _section8(rp: Report) -> list[dict]:
+    from .fmt import pct, won
+
     prev, cur, rules = rp.prev, rp.cur, rp.rules
+    py, cy = prev.year, cur.year
+    sales_p, sales_c = g(prev.pl, 1), g(cur.pl, 1)
     items = []
     # ① 가지급금·가수금 (거래처코드별)
     for title, acc in [("가지급금명세서", "가지급금"), ("주임종단기채권명세서", "주임종단기채권"), ("가수금명세서", "가수금")]:
@@ -301,75 +347,83 @@ def _section8(rp: Report) -> list[dict]:
             continue
         lines = []
         for code in sorted(set(pr) | set(cr)):
-            p = pr.get(code)
-            c = cr.get(code)
-            pb = p.balance if p else (c.opening or 0 if c else 0)
+            p, c = pr.get(code), cr.get(code)
+            pb = p.balance if p else (c.opening if c and c.opening is not None else 0)
             cb = c.balance if c else 0
             name = (c or p).partner
-            detail = ""
-            if c and c.increase is not None and c.decrease is not None:
-                detail = f" (당기 증가 {c.increase:,}원, 감소 {c.decrease:,}원)"
-            lines.append(f"거래처코드 {code} {name}: {prev.year}년 말 {pb:,}원 → {cur.year}년 말 {cb:,}원, "
-                         f"{'감소' if cb < pb else '증가'} {abs(cb - pb):,}원{detail}. "
-                         f"{cur.year}년 말 잔액은 매출액의 {cb / g(cur.pl, 1) * 100:.2f}%입니다.")
-        page = (cur.ledgers[title][0].page if cur.ledgers.get(title) else None)
+            detail = f" (당기 증가 {c.increase:,}원, 감소 {c.decrease:,}원)" if c and c.increase is not None and c.decrease is not None else ""
+            ch = cb - pb
+            word = "확인 필요" if is_na(ch) else ("감소" if ch < 0 else "증가")
+            lines.append(f"거래처코드 {code} {name}: {py}년 말 {won(pb)}원 → {cy}년 말 {won(cb)}원, {word} "
+                         f"{won(abs(ch)) if not is_na(ch) else ''}{'원' if not is_na(ch) else ''}{detail}. "
+                         f"{cy}년 말 잔액은 매출액의 {pct(_pct(cb, sales_c))}입니다.")
+        page = cur.ledgers[title][0].page if cur.ledgers.get(title) else None
         items.append({"title": f"{acc} 현황", "lines": lines, "src": f"결산부속명세서 {title} ({cur.doc.name} p{page})"})
     if not any(prev.ledgers.get(t) or cur.ledgers.get(t) for t in ("가지급금명세서", "주임종단기채권명세서")):
         items.append({"title": "가지급금 현황", "lines": ["전기·당기 모두 결산부속명세서에 가지급금 명세가 없습니다."],
                       "src": "결산부속명세서"})
-    # ② 인건비 = 직원급여 + 임원급여 (표준손익계산서 69·70, 상여 71·72·73 별도 표시)
-    def labor(pl):
-        return g(pl, 69), g(pl, 70)
-
-    pe, pw = labor(prev.pl)
-    ce, cw = labor(cur.pl)
+    # 대표자·임원 차입금 (가수금 성격) — 표준재무상태표 236(단기)·292(장기)
+    for code, nm in [(236, "주주·임원·직원 단기차입금"), (292, "주주·임원·직원 장기차입금")]:
+        a, b = g(prev.bs, code), g(cur.bs, code)
+        if (not is_na(a) and a) or (not is_na(b) and b):
+            items.append({"title": nm, "lines": [f"{py}년 말 {won(a)}원 → {cy}년 말 {won(b)}원 ({won(b - a) if not is_na(b - a) else '확인 필요'}원 변동), "
+                                                 f"{cy}년 말 매출액 대비 {pct(_pct(b, sales_c))}."],
+                          "src": f"표준재무상태표 코드 {code}"})
+    # ② 인건비 = 직원급여 + 임원급여
+    pe, pw, ce, cw = g(prev.pl, 69), g(prev.pl, 70), g(cur.pl, 69), g(cur.pl, 70)
     ch = change(pe + pw, ce + cw)
-    rate = f", {ch['rate']:+.1f}%" if ch["rate"] is not None else ""
+    rate = f", {pct(ch['rate'], 1, sign=True)}" if ch["rate"] is not None else (f", {ch['label']}" if ch["label"] else "")
     items.append({"title": "인건비 (직원급여 + 임원급여)", "lines": [
-        f"직원급여 {pw:,}원 → {cw:,}원 ({cw - pw:+,}원), 임원급여 {pe:,}원 → {ce:,}원.",
-        f"인건비 합계 {pe + pw:,}원 → {ce + cw:,}원 ({ch['diff']:+,}원{rate}), 매출액 대비 "
-        f"{(pe + pw) / g(prev.pl, 1) * 100:.2f}% → {(ce + cw) / g(cur.pl, 1) * 100:.2f}%."],
-        "src": f"표준손익계산서 코드 69·70 ({prev.doc.name} p{prev.pl[70].page if 70 in prev.pl else '-'}, "
-               f"{cur.doc.name} p{cur.pl[70].page if 70 in cur.pl else '-'})"})
+        f"직원급여 {won(pw)}원 → {won(cw)}원, 임원급여 {won(pe)}원 → {won(ce)}원.",
+        f"인건비 합계 {won(pe + pw)}원 → {won(ce + cw)}원 ({won(ch['diff']) if is_na(ch['diff']) else format(ch['diff'], '+,')}원{rate}), "
+        f"매출액 대비 {pct(_pct(pe + pw, sales_p))} → {pct(_pct(ce + cw, sales_c))}."],
+        "src": "표준손익계산서 코드 69(임원급여)·70(직원급여)"})
     # ③ 부채비율 변화
     dp, dc = debt_ratio(prev.bs), debt_ratio(cur.bs)
 
     def dtxt(d, bs):
-        return (f"자본잠식 (자본총계 {g(bs,382):,}원)" if d["impaired"] else f"{d['value']:.2f}%")
+        if d["label"] == "확인 필요":
+            return "확인 필요"
+        return f"자본잠식 (자본총계 {g(bs,382):,}원)" if d["impaired"] else pct(d["value"])
 
-    lines = [f"부채비율 {prev.year}년 {dtxt(dp, prev.bs)} → {cur.year}년 {dtxt(dc, cur.bs)}."]
-    if dp["impaired"] and not dc["impaired"]:
+    lines = [f"부채비율 {py}년 {dtxt(dp, prev.bs)} → {cy}년 {dtxt(dc, cur.bs)}."]
+    if dp["label"] == "확인 필요" or dc["label"] == "확인 필요":
+        lines.append("부채총계 또는 자본총계에 확인 필요 값이 있어 변화 분석을 보류합니다.")
+    elif dp["impaired"] and not dc["impaired"]:
         lines.append(f"당기순이익 {g(cur.pl,219):,}원으로 자본총계가 {g(cur.bs,382):,}원이 되어 자본잠식이 해소되었습니다.")
-        cap = g(prev.bs, 334)
-        need = cap - g(prev.bs, 382)
+        cap, need = g(prev.bs, 334), g(prev.bs, 334) - g(prev.bs, 382)
         ga = sum(r.balance for r in prev.ledgers.get("가수금명세서", []))
         if ga:
-            lines.append(f"참고: {prev.year}년 말 기준으로 자본금({cap:,}원)까지 회복하려면 {need:,}원이 필요했으며, "
-                         f"당시 대표자 가수금은 {ga:,}원이었습니다.")
+            lines.append(f"참고: {py}년 말 기준으로 자본금({cap:,}원)까지 회복하려면 {need:,}원이 필요했으며, 당시 대표자 가수금은 {ga:,}원이었습니다.")
     elif dc["impaired"]:
         cap = g(cur.bs, 334)
-        need = cap - g(cur.bs, 382)
-        lines.append(f"자본잠식 상태입니다. 자본금({cap:,}원)까지 회복하려면 {need:,}원의 자본 확충(가수금 출자전환 등)이 필요합니다.")
+        lines.append(f"자본잠식 상태입니다. 자본금({cap:,}원)까지 회복하려면 {cap - g(cur.bs,382):,}원의 자본 확충(가수금 출자전환 등)이 필요합니다.")
     else:
-        lines.append(f"부채비율이 {dc['value'] - dp['value']:+.2f}%p 변동했습니다.")
+        lines.append(f"부채비율이 {dc['value'] - dp['value']:+,.2f}%p 변동했습니다 (부채총계 {g(prev.bs,333):,}원 → {g(cur.bs,333):,}원, "
+                     f"자본총계 {g(prev.bs,382):,}원 → {g(cur.bs,382):,}원).")
     items.append({"title": "부채비율 변화", "lines": lines, "src": "표준재무상태표 코드 333·382"})
     # ④ 전기 대비 5% 이상 증가한 비용 (D-027)
     th = rules["expense_increase_pct"]
-    sga = rp.sections.get("II", {}).get("sga_all") or _section2(rp)["sga_all"]
-    inc = [s for s in sga if s["rate"] is not None and s["rate"] >= th]
-    inc.sort(key=lambda s: -s["rate"])
-    items.append({"title": f"전기 대비 {th:g}% 이상 증가한 비용", "lines": [
-        f"{s['name']}: {s['prev']:,}원 → {s['cur']:,}원 ({s['diff']:+,}원, {s['rate']:+.1f}%)" for s in inc
-    ] or ["해당 항목 없음"], "src": f"결산 손익계산서 판매비와관리비 ({cur.doc.name})"})
-    # ⑤ 없어진 항목 / 새로 생긴 항목 (손익계산서 + 재무상태표 계정)
+    sga = rp.sections["II"]["sga_all"]
+    inc = sorted([x for x in sga if x["rate"] is not None and x["rate"] >= th], key=lambda x: -x["rate"])
+    pend = [x for x in sga if x["label"] == "확인 필요"]
+    lines = [f"{x['name']}: {x['prev']:,}원 → {x['cur']:,}원 ({x['diff']:+,}원, {x['rate']:+.1f}%)" for x in inc] or ["해당 항목 없음"]
+    if pend:
+        lines.append("판단 보류(확인 필요 값): " + ", ".join(x["name"] for x in pend))
+    items.append({"title": f"전기 대비 {th:g}% 이상 증가한 비용", "lines": lines, "src": "표준손익계산서 판매비와관리비 코드"})
+    # ⑤ 없어진 항목 / 새로 생긴 항목
     gone, new = [], []
-    for s in sga:
-        if s["prev"] and not s["cur"]:
-            gone.append(f"{s['name']} ({s['prev']:,}원 → 0원)")
-        if not s["prev"] and s["cur"]:
-            new.append(f"{s['name']} (0원 → {s['cur']:,}원)")
+    for x in sga:
+        if is_na(x["prev"]) or is_na(x["cur"]):
+            continue
+        if x["prev"] and not x["cur"]:
+            gone.append(f"{x['name']} ({x['prev']:,}원 → 0원)")
+        if not x["prev"] and x["cur"]:
+            new.append(f"{x['name']} (0원 → {x['cur']:,}원)")
     for code, name in [(35, "매출원가"), (218, "법인세비용")]:
         a, b = g(prev.pl, code), g(cur.pl, code)
+        if is_na(a, b):
+            continue
         if a and not b:
             gone.append(f"{name} ({a:,}원 → 0원)")
         if not a and b:
@@ -381,7 +435,7 @@ def _section8(rp: Report) -> list[dict]:
             continue
         a, b = g(prev.bs, code), g(cur.bs, code)
         nm = names[code]
-        if not nm[:1].isdigit() or "." not in nm[:4]:  # 대분류만 (예: 2. 재고자산 → '(2) 재고자산'은 제외)
+        if is_na(a, b) or not nm[:1].isdigit() or "." not in nm[:4]:
             continue
         if a and not b:
             gone.append(f"{nm} ({a:,}원 → 0원)")
@@ -389,13 +443,15 @@ def _section8(rp: Report) -> list[dict]:
             new.append(f"{nm} (0원 → {b:,}원)")
     items.append({"title": "없어진 항목 / 새로 생긴 항목", "lines": [
         "없어진 항목: " + (", ".join(gone) if gone else "없음"),
-        "새로 생긴 항목: " + (", ".join(new) if new else "없음")], "src": "표준재무상태표 · 결산 손익계산서"})
-    # 참고: 매출채권 · 거래처 (요구사항 #7 예시)
+        "새로 생긴 항목: " + (", ".join(new) if new else "없음")], "src": "표준재무상태표 · 표준손익계산서"})
+    # 참고: 매출채권 · 매출처
     pr, cr = prev.ledgers.get("외상매출금명세서", []), cur.ledgers.get("외상매출금명세서", [])
     if pr or cr:
         pb, cb = sum(r.balance for r in pr), sum(r.balance for r in cr)
-        lines = [f"외상매출금 잔액 {pb:,}원 → {cb:,}원, 매출액 대비 {pb / g(prev.pl,1) * 100:.2f}% → {cb / g(cur.pl,1) * 100:.2f}%.",
-                 f"거래 거래처 수 {len(pr)}곳 → {len(cr)}곳 (기말 잔액 보유 {sum(1 for r in pr if r.balance)}곳 → "
-                 f"{sum(1 for r in cr if r.balance)}곳)."]
-        items.append({"title": "매출채권 · 매출처", "lines": lines, "src": f"결산부속명세서 외상매출금명세서"})
+        lines = [f"외상매출금 잔액 {won(pb)}원 → {won(cb)}원, 매출액 대비 {pct(_pct(pb, sales_p))} → {pct(_pct(cb, sales_c))}.",
+                 f"명세서 거래처 수 {len(pr)}곳 → {len(cr)}곳."]
+        if any(r.masked for r in cr + pr):
+            lines.append("거래처별 금액 일부가 회색 처리·빈칸이라 거래처별 잔액 분석은 보류합니다 "
+                         f"(재무상태표 외상매출금 {won(g(prev.bs,10))}원 → {won(g(cur.bs,10))}원).")
+        items.append({"title": "매출채권 · 매출처", "lines": lines, "src": "결산부속명세서 외상매출금명세서 · 표준재무상태표 코드 10"})
     return items

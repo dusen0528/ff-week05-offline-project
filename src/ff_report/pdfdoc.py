@@ -59,8 +59,36 @@ class Page:
     @cached_property
     def head(self) -> str:
         """맨 앞 6줄(공백 제거). 결산서 제목 판별용."""
-        lines = [l for l in self.text.splitlines() if l.strip()][:6]
+        lines = [l for l in self.text.splitlines() if l.strip() and "실습용" not in l and "회색" not in l][:6]
         return nospace("".join(lines))
+
+    @cached_property
+    def has_mask_notice(self) -> bool:
+        """'회색 처리 금액은 확인 필요' 안내가 있는 페이지."""
+        return "회색처리금액은확인필요" in self.flat or "회색처리" in nospace(self._plumber_page.extract_text() or "")
+
+    @cached_property
+    def masks(self) -> list[dict]:
+        """회색으로 가린 금액 칸 (안내문이 있는 페이지만). 칸 안에 글자가 없는 회색(≈0.90) 도형."""
+        if not self.has_mask_notice:
+            return []
+        p = self._plumber_page
+        out = []
+        for s in list(p.curves) + list(p.rects):
+            c = s.get("non_stroking_color")
+            if not s.get("fill") or not isinstance(c, (tuple, list)) or not c:
+                continue
+            if not all(abs(float(x) - 0.90) < 0.02 for x in c) or s["width"] > 300:
+                continue
+            inside = [w for w in self.words if w["x0"] >= s["x0"] - 1 and w["x1"] <= s["x1"] + 1
+                      and w["top"] >= s["top"] - 1 and w["bottom"] <= s["bottom"] + 1]
+            if not inside:
+                out.append({"x0": s["x0"], "x1": s["x1"], "top": s["top"], "bottom": s["bottom"]})
+        return out
+
+    def masked(self, x0: float, x1: float, top: float, bottom: float) -> bool:
+        cy = (top + bottom) / 2
+        return any(m["x0"] < x1 and m["x1"] > x0 and m["top"] - 2 <= cy <= m["bottom"] + 2 for m in self.masks)
 
     @cached_property
     def words(self) -> list[dict]:

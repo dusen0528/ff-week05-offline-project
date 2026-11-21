@@ -19,8 +19,9 @@ def _sheet(wb, title, header, rows, widths):
     ws.append(header)
     for c in ws[1]:
         c.fill, c.font = HEAD, BOLD
+    from .model import NA
     for r in rows:
-        ws.append(r)
+        ws.append(["확인 필요" if (x is NA or (x is None and False)) else x for x in r])
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
     for row in ws.iter_rows(min_row=2):

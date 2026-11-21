@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "/sessions/rcw-01uyeuvt8njmuqsscyqsdrg7/.venvs/ff/bin/ff-report", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/sessions/rcw-01uyeuvt8njmuqsscyqsdrg7/mnt/Desktop/ff-week05-offline-project/src/ff_report/__init__.py", line 34, in main
+    rp = build(prev, cur, rules)
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sessions/rcw-01uyeuvt8njmuqsscyqsdrg7/mnt/Desktop/ff-week05-offline-project/src/ff_report/analysis.py", line 83, in build
+    S["VIII"] = _section8(rp)
+                ^^^^^^^^^^^^^
+  File "/sessions/rcw-01uyeuvt8njmuqsscyqsdrg7/mnt/Desktop/ff-week05-offline-project/src/ff_report/analysis.py", line 331, in _section8
+    f"{(pe + pw) / g(prev.pl, 1) * 100:.2f}% → {(ce + cw) / g(cur.pl, 1) * 100:.2f}%."],
+                                                ~~~~~~~~~~^~~~~~~~~~~~~~
+ZeroDivisionError: division by zero
+exit=1

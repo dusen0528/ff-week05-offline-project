@@ -4,20 +4,26 @@ from __future__ import annotations
 
 from decimal import ROUND_HALF_UP, Decimal
 
+from .model import NA, NEEDS_CHECK
+
 
 def won(v) -> str:
-    if v is None:
-        return "확인 필요"
+    if v is None or v is NA:
+        return NEEDS_CHECK
     return f"{int(v):,}"
 
 
 def signed(v) -> str:
+    if v is NA:
+        return NEEDS_CHECK
     if v is None:
         return "-"
     return "0" if int(v) == 0 else f"{int(v):+,}"
 
 
 def pct(v, digits: int = 2, sign: bool = False) -> str:
+    if v is NA:
+        return NEEDS_CHECK
     if v is None:
         return "-"
     return f"{v:+.{digits}f}%" if sign else f"{v:.{digits}f}%"
@@ -25,8 +31,8 @@ def pct(v, digits: int = 2, sign: bool = False) -> str:
 
 def card_amount(v) -> str:
     """요약 카드 금액: 0.01억 단위 반올림. |값| ≥ 1억 → '1.93억원', 미만 → '4,900만원' (D-021)."""
-    if v is None:
-        return "확인 필요"
+    if v is None or v is NA:
+        return NEEDS_CHECK
     eok = (Decimal(int(v)) / Decimal(100_000_000)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     if abs(eok) >= 1:
         return f"{eok}억원"

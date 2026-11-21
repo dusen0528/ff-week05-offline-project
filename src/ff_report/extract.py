@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .model import CONFIRMED, NEEDS_CHECK, Value, missing
+from .model import CONFIRMED, NA, NEEDS_CHECK, Value, missing
 from .pdfdoc import Page, PdfDoc, nospace, to_int
 
 AMT = r"-?\(?[\d,]+\)?"
@@ -58,59 +58,96 @@ def fiscal_year(info: dict[str, Value]) -> int:
 
 
 # ---------------------------------------------------------------- 표준재무제표 (코드 → 금액)
-STD_ROW = re.compile(r"^(?P<label>.*?)\s+(?P<code>\d{1,3})\s+(?P<amt>[:\d\s\-]*)$")
+STD_ROW = re.compile(r"^(?P<label>.*?)\s+(?P<code>\d{1,3})\s+(?P<amt>[:\d\s\-]*?)(?:\s*(?P<txt>[가-힣]+))?$")
 
 
 def standard_statement(doc: PdfDoc, form: str) -> dict[int, Value]:
-    """표준재무상태표/표준손익계산서: 좌우 2단 표를 x좌표로 나눠 '계정 코드 금액'을 읽는다."""
+    """표준재무상태표/표준손익계산서: 좌우 2단 표를 x좌표로 나눠 '계정 코드 금액'을 읽는다.
+    금액 칸이 회색으로 가려져 있으면 0이 아니라 «확인 필요»로 둔다 (2차 규칙 4)."""
     out: dict[int, Value] = {}
     year = 0
     for pg in doc.find(form):
         mid = pg.width / 2
         for row in pg.rows():
-            for half in ([w for w in row if w["x0"] < mid], [w for w in row if w["x0"] >= mid]):
+            for side, half in ((0, [w for w in row if w["x0"] < mid]), (1, [w for w in row if w["x0"] >= mid])):
                 if not half:
                     continue
                 text = " ".join(w["text"] for w in half)
                 m = STD_ROW.match(text.strip())
-                if not m or ":" not in m.group("amt"):
+                if not m or (":" not in m.group("amt") and m.group("amt").strip()):
+                    continue
+                if len(nospace(m.group("label")).lstrip(":")) < 2:
                     continue
                 code = int(m.group("code"))
-                amt = to_int(re.sub(r"^[\s:]+", "", m.group("amt")))
-                label = m.group("label").strip()
                 if code in out:  # 같은 코드가 다시 나오면 첫 값 유지
                     continue
+                amt = to_int(re.sub(r"^[\s:]+", "", m.group("amt")))
+                label = m.group("label").strip().lstrip(": ").strip()
+                if m.group("txt"):  # 금액 칸에 '확인중' 같은 글자가 적혀 있음 → 숫자가 아님
+                    out[code] = Value(label, year, None, doc.name, form, pg.no, f"{label} (코드 {code})", NEEDS_CHECK,
+                                      f"금액 칸에 '{m.group('txt')}'(으)로 적혀 있음 (숫자 아님)")
+                    continue
+                code_w = next((w for w in half if w["text"] == m.group("code")), half[0])
+                x_end = mid if side == 0 else pg.width
+                top = min(w["top"] for w in half)
+                bottom = max(w["bottom"] for w in half)
+                if amt is None and pg.masked(code_w["x1"], x_end, top, bottom):
+                    out[code] = Value(label, year, None, doc.name, form, pg.no, f"{label} (코드 {code})",
+                                      NEEDS_CHECK, "회색 처리된 칸 (금액 확인 필요, 0 아님)")
+                    continue
                 out[code] = Value(label, year, amt if amt is not None else 0, doc.name, form, pg.no,
-                                  f"{label} (코드 {code})")
+                                  f"{label} (코드 {code})", note="" if amt is not None else "원문 빈칸")
     return out
 
 
-# ---------------------------------------------------------------- 결산 손익계산서 (계정명, 당기/전기)
-FS_LINE = re.compile(r"^\s*(?P<label>[^\d\-\s][^\d]*?)\s+(?P<nums>(?:-?[\d,]+\s*)+)$")
+# ---------------------------------------------------------------- 결산 재무제표 (계정명, 당기/전기)
+NUM = re.compile(r"^-?\(?[\d,]+\)?$")
 
 
 def _clean_label(s: str) -> str:
     s = nospace(s)
     s = re.sub(r"^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\.", "", s)
+    s = re.sub(r"^<(.+)>$", r"\1", s)
     return s
 
 
 def settlement_statement(doc: PdfDoc, form: str) -> list[dict]:
-    """결산 재무상태표/손익계산서. [{'label','cur','prev','page'}] (금액 2열: 당기, 전기)."""
+    """결산 재무상태표/손익계산서. 단어 좌표로 당기·전기 열을 나눠 읽는다.
+    [{'label','cur','prev','page','cur_masked','prev_masked'}] — 값이 없으면 None."""
     rows = []
     for pg in doc.find(form):
-        for line in pg.lines():
-            m = FS_LINE.match(line)
-            if not m:
+        prs = pg.rows()
+        cur_h = prev_h = None
+        for r in prs[:14]:  # 당기·전기 머리글이 한 줄에 같이 있는 행
+            c = next((w for w in r if re.search(r"\(당\)기$", w["text"])), None)
+            p_ = next((w for w in r if re.search(r"\(전\)기$", w["text"])), None)
+            if c and p_:
+                cur_h, prev_h = c, p_
+                break
+        if cur_h and prev_h:
+            bound = ((cur_h["x0"] + cur_h["x1"]) / 2 + (prev_h["x0"] + prev_h["x1"]) / 2) / 2
+        else:
+            bound = pg.width * 0.70
+        for r in prs:
+            nums = [w for w in r if NUM.match(w["text"]) and ("," in w["text"] or w["text"] in ("0", "-0"))]
+            lab = [w for w in r if w not in nums]
+            label = _clean_label("".join(w["text"] for w in lab))
+            if not label or label.startswith("제") or "현재" in label or "회사명" in label or label in ("과목", "금액"):
                 continue
-            nums = [to_int(x) for x in m.group("nums").split()]
-            nums = [n for n in nums if n is not None]
-            if not nums:
+            if "(당)기" in label or "단위" in label:
                 continue
-            label = _clean_label(m.group("label"))
-            if not label or label.startswith("제") or "현재" in label:
+            lx = max((w["x1"] for w in lab), default=0)
+            cur = [w for w in nums if (w["x0"] + w["x1"]) / 2 < bound]
+            prev = [w for w in nums if (w["x0"] + w["x1"]) / 2 >= bound]
+            top = min(w["top"] for w in r)
+            bottom = max(w["bottom"] for w in r)
+            cm = not cur and pg.masked(lx, bound, top, bottom)
+            pm = not prev and pg.masked(bound, pg.width, top, bottom)
+            if not nums and not (cm or pm):
                 continue
-            rows.append({"label": label, "cur": nums[0], "prev": nums[1] if len(nums) > 1 else None, "page": pg.no})
+            rows.append({"label": label, "cur": to_int(cur[-1]["text"]) if cur else None,
+                         "prev": to_int(prev[-1]["text"]) if prev else None, "page": pg.no,
+                         "cur_masked": cm, "prev_masked": pm})
     return rows
 
 
@@ -164,10 +201,20 @@ def tax_adjustment(doc: PdfDoc, year: int) -> dict[str, Value]:
                     continue
                 out[code] = Value(TAX_CODES[code], year, v, doc.name, "법인세과세표준및세액조정계산서(별지3)",
                                   pg.no, f"{TAX_CODES[code]} ({code})")
-    for code, name in TAX_CODES.items():  # 빈 칸 = 0 (원문이 비어 있음)
+    for code, name in TAX_CODES.items():  # 빈 칸: 회색 처리면 확인 필요, 아니면 서식상 해당 없음(0)
         if code not in out:
-            out[code] = Value(name, year, 0, doc.name, "법인세과세표준및세액조정계산서(별지3)", pg.no,
-                              f"{name} ({code})", note="원문 빈칸")
+            masked = False
+            if pg.masks:
+                for w in pg.words:
+                    if w["text"] == code and pg.masked(w["x1"], w["x1"] + 130, w["top"], w["bottom"]):
+                        masked = True
+                        break
+            if masked:
+                out[code] = Value(name, year, None, doc.name, "법인세과세표준및세액조정계산서(별지3)", pg.no,
+                                  f"{name} ({code})", NEEDS_CHECK, "회색 처리된 칸 (금액 확인 필요, 0 아님)")
+            else:
+                out[code] = Value(name, year, 0, doc.name, "법인세과세표준및세액조정계산서(별지3)", pg.no,
+                                  f"{name} ({code})", note="원문 빈칸")
     return out
 
 
@@ -176,6 +223,9 @@ def revenue(doc: PdfDoc, year: int) -> Value:
         m = re.search(r"수입금액\(([\d,]+)\)", pg.flat)
         if m:
             return Value("수입금액", year, to_int(m.group(1)), doc.name, "법인세과세표준및세액신고서", pg.no, "수입금액")
+        note = "회색 처리된 칸 (금액 확인 필요, 0 아님)" if pg.masks else "수입금액 칸이 비어 있음"
+        return Value("수입금액", year, None, doc.name, "법인세과세표준및세액신고서", pg.no, "수입금액",
+                     NEEDS_CHECK, note)
     return missing("수입금액", year, "신고서에서 수입금액을 찾지 못함")
 
 
@@ -271,8 +321,9 @@ class LedgerRow:
     opening: int | None
     increase: int | None
     decrease: int | None
-    balance: int
+    balance: object  # int 또는 NA(회색 처리·빈칸)
     page: int
+    masked: bool = False
 
 
 def ledger(doc: PdfDoc, title: str) -> list[LedgerRow]:
@@ -308,8 +359,16 @@ def ledger(doc: PdfDoc, title: str) -> list[LedgerRow]:
                 col = min(cols, key=lambda c: abs(c[1] - w["x1"]))[0]
                 vals[col] = to_int(w["text"])
             acc = next((w["text"] for w in row if not re.fullmatch(r"\d+", w["text"])), "")
+            name_words = [w for w in name_words if not re.fullmatch(r"\d{3}-\d{2}-\d{5}", w)]
+            gold = next((c for c in cols if c[0] == "금액"), None)
+            top, bottom = min(w["top"] for w in row), max(w["bottom"] for w in row)
+            masked = bool(pg.masks) and pg.masked(pc["x1"], (gold[1] + 5) if gold else pg.width, top, bottom)
+            if not nums:
+                bal = NA  # 금액이 비어 있거나 회색 처리 → 0으로 보지 않는다
+            else:
+                bal = vals.get("금액", 0)
             out.append(LedgerRow(acc, pc["text"], " ".join(name_words), vals.get("기초액"), vals.get("당기증가"),
-                                 vals.get("당기감소"), vals.get("금액", 0), pg.no))
+                                 vals.get("당기감소"), bal, pg.no, masked or not nums))
     return out
 
 
@@ -331,6 +390,8 @@ class YearData:
     ledgers: dict[str, list[LedgerRow]] = field(default_factory=dict)
     settle_bs_prev: dict[str, int] = field(default_factory=dict)  # 결산 재무상태표 전기 열
     settle_pl_prev: dict[str, int] = field(default_factory=dict)
+    settle_bs: list[dict] = field(default_factory=list)
+    settle_pl: list[dict] = field(default_factory=list)
 
 
 LEDGERS = ["가수금명세서", "가지급금명세서", "외상매출금명세서", "주임종단기채권명세서"]
@@ -358,10 +419,12 @@ def load_year(path) -> YearData:
         sga=sga_detail(doc),
     )
     yd.ledgers = {t: ledger(doc, t) for t in LEDGERS}
-    for r in settlement_statement(doc, "결산재무상태표"):
+    yd.settle_bs = settlement_statement(doc, "결산재무상태표")
+    yd.settle_pl = settlement_statement(doc, "결산손익계산서")
+    for r in yd.settle_bs:
         if r["prev"] is not None:
             yd.settle_bs_prev.setdefault(r["label"], r["prev"])
-    for r in settlement_statement(doc, "결산손익계산서"):
+    for r in yd.settle_pl:
         if r["prev"] is not None:
             yd.settle_pl_prev.setdefault(r["label"], r["prev"])
     return yd
