@@ -1,7 +1,13 @@
+# input/ (원본 PDF·Excel, kordoc 변환본)과 output/ (보고서·Excel·근거·그래프)은 원격에서 추적한다.
+# 차수별 재현·회고를 위해 받은 자료와 실행 결과를 같이 남긴다.
 
-!output/.gitkeep
+# 로그·임시 파일
 logs/*
 !logs/.gitkeep
+
+# Python
 __pycache__/
 .venv/
+
+# OS
 .DS_Store
