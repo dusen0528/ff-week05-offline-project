@@ -231,6 +231,7 @@ def _section2(rp: Report) -> dict:
         sga.append({"code": code, "name": name, "prev": pv, "cur": cv, **change(pv, cv),
                     "share_prev": _pct(pv, g(prev.pl, 1)), "share_cur": _pct(cv, g(cur.pl, 1)),
                     "comp_cur": _pct(cv, g(cur.pl, 67)), "page_cur": (c or p)["src"].page,
+                    "page_prev": p["src"].page if p else "-",
                     "src": (c or p)["src"]})
     sga.sort(key=lambda r: (is_na(r["cur"]), -(r["cur"] if not is_na(r["cur"]) else 0)))
     top_n = rp.rules["sga_top_n"]
@@ -325,9 +326,16 @@ def _section4(rp: Report) -> dict:
 
 # ------------------------------------------------------------------ VI 공제·감면
 def _section6(rp: Report) -> dict:
+    """공제·감면세액: 합계표(갑)와 세액감면신청서 중 별지3 ⑰+⑲와 합계가 맞는 쪽을 쓴다 (4차)."""
     cur = rp.cur
-    total = sum(v.value for v in cur.reductions)
     form_total = g(cur.tax, "17") + g(cur.tax, "19")
+    cands = [("세액감면신청서", cur.reductions), ("공제감면세액합계표(갑)", cur.reductions_sum)]
+    chosen = next((rows for _, rows in cands if rows and sum(v.value for v in rows) == form_total), None)
+    if chosen is None:
+        chosen = max((rows for _, rows in cands), key=lambda r: sum(v.value for v in r))
+    if chosen is not cur.reductions:
+        cur.reductions = chosen
+    total = sum(v.value for v in cur.reductions)
     _eq(rp.ev, "공제감면 합계 = 별지3 ⑰+⑲", total, form_total, f"신청서 {total:,} / 별지3 {form_total:,}")
     return {"rows": cur.reductions, "total": total, "form_total": form_total}
 

@@ -15,10 +15,11 @@ FORMS: dict[str, dict] = {
     "신고서": {"any": ["법인세과세표준및세액신고서", "re:별지제1호서식[\\]】)]"], "not": ["지방소득세", "지방세법", "조세특례제한법"]},
     "세액조정계산서": {"any": ["법인세과세표준및세액조정계산서", "re:별지제3호서식[\\]】)]"], "not": ["지방소득세", "지방세법"]},
     "수입금액조정명세서": {"any": ["수입금액조정명세서"], "not": ["조정후"]},
-    "표준재무상태표": {"any": ["표준재무상태표"], "not": ["합계표준재무상태표"]},
-    "표준손익계산서": {"any": ["표준손익계산서"], "not": []},
+    "표준재무상태표": {"any": ["re:표준재무상태표"], "not": ["합계표준재무상태표"]},
+    "표준손익계산서": {"any": ["re:표준손익계산서"], "not": []},
     "자본금과적립금조정명세서(갑)": {"any": ["자본금과적립금조정명세서(갑)", "re:별지제50호서식\\(갑\\)"], "not": []},
     "소득금액조정합계표": {"any": ["소득금액조정합계표", "re:별지제15호서식[\\]】)]"], "not": ["과목별", "부표"]},
+    "공제감면세액합계표(갑)": {"any": ["추가납부세액합계표(갑)", "re:별지제8호서식\\(갑\\)"], "not": []},
     "세액감면신청서": {"any": ["세액감면(면제)신청서"], "not": []},
     "공제감면세액계산서": {"any": ["공제감면세액계산서"], "not": []},
     "최저한세조정계산서": {"any": ["최저한세조정계산서", "re:별지제4호서식[\\]】)(]"], "not": ["지방세법"]},
@@ -143,6 +144,22 @@ class PdfDoc:
             if hit:
                 out.append(pg)
         return out
+
+    def find_cont(self, form: str, max_extra: int = 4) -> list[Page]:
+        """서식 첫 쪽 + 제목 없이 이어지는 다음 쪽들 (예: 합계표(갑) 4쪽 중 2~4쪽)."""
+        out = []
+        for pg in self.find(form):
+            out.append(pg)
+            for nxt in self.pages[pg.no: pg.no + max_extra]:
+                if "■" in nxt.text[:300] or "별지" in nxt.flat[:120] or "명세서" in nxt.flat[:40]:
+                    break
+                out.append(nxt)
+        seen, res = set(), []
+        for p in out:
+            if p.no not in seen:
+                seen.add(p.no)
+                res.append(p)
+        return res
 
     def find_title(self, title: str) -> list[Page]:
         """부속명세서처럼 한 페이지에 여러 표가 있을 때, 제목이 들어 있는 페이지."""

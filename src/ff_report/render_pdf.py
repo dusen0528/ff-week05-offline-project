@@ -229,9 +229,13 @@ def render(rp, out: Path, font_dir: Path, charts: dict[str, Path], issuer: str):
     E.append(table(["계정", f"{py}년", f"{cy}년", "증감액", "증감률", f"매출 대비 {py}", f"매출 대비 {cy}"], srows,
                    [W * 0.2, W * 0.15, W * 0.15, W * 0.15, W * 0.11, W * 0.12, W * 0.12], num_cols=(1, 2, 3, 4, 5, 6),
                    bold_rows=(len(srows) - 1,)))
-    E.append(P("계정명은 결산서 손익계산서 기준입니다 (표준손익계산서 「37.기타」 = 결산서 「외주용역비」). "
-               f"매출 대비 비중 = 해당 계정 ÷ 같은 연도 매출액 × 100.", "note"))
-    E.append(src_note(f"{cur.doc.name} · 결산 손익계산서 · p{II['sga_top'][0]['page_cur']}" if II["sga_top"] else None))
+    named = [s["name"] for s in II["sga_top"] if str(s["name"]).startswith("기타(")]
+    extra = (f" 「기타」 계정은 결산 손익계산서에서 같은 금액의 계정을 찾아 괄호에 이름을 적었습니다 ({', '.join(named)})."
+             if named else "")
+    E.append(P("금액과 계정명은 표준손익계산서 기준입니다." + extra +
+               " 매출 대비 비중 = 해당 계정 ÷ 같은 연도 매출액 × 100.", "note"))
+    E.append(src_note(f"{prev.doc.name} · 표준손익계산서 · p{II['sga_top'][0].get('page_prev', '-')} / "
+                      f"{cur.doc.name} · 표준손익계산서 · p{II['sga_top'][0]['page_cur']}" if II["sga_top"] else None))
 
     E.append(P("(6) 그래프", "h2"))
     for k in ("pl", "comp", "sga", "bs"):

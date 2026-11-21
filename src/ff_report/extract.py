@@ -351,7 +351,7 @@ def income_adjustments(doc: PdfDoc, year: int) -> dict:
 
 # ---------------------------------------------------------------- 공제·감면 (세액감면신청서)
 REDUCE = re.compile(
-    r"^\s*(?P<name>\S.*?)\s+(?P<law>(?:舊)?(?:영|법)제\S+)\s+(?P<code>[0-9A-Z]{3})\s+(?P<rate>[\d.]+%)\s+(?P<base>[\d,]+)\s+(?P<amt>[\d,]+)"
+    r"^\s*(?:\(\d{3}\)\s*)?(?P<name>\S.*?)\s+(?P<law>(?:舊)?(?:영|법)\s?제\S+)\s+(?P<code>[0-9A-Z]{3})\s+(?P<rate>[\d.]+%)\s+(?P<base>[\d,]+)\s+(?P<amt>[\d,]+)"
 )
 
 
@@ -361,11 +361,43 @@ def reductions(doc: PdfDoc, year: int) -> list[Value]:
         for line in pg.lines():
             m = REDUCE.match(line)
             if m:
-                law = m.group("law")
+                law = m.group("law").replace(" ", "")
                 law_txt = ("「조세특례제한법 시행령」" if law.startswith("영") else "「조세특례제한법」") + law[1:].replace("제", " 제", 1).strip()
                 out.append(Value(nospace(m.group("name")), year, to_int(m.group("amt")), doc.name, "세액감면(면제)신청서",
                                  pg.no, f"코드 {m.group('code')} · 감면율 {m.group('rate')}",
                                  note=law_txt))
+    return out
+
+
+def reductions_summary(doc: PdfDoc, year: int) -> list[Value]:
+    """공제감면세액 및 추가납부세액합계표(갑): 각 행의 감면(④)·공제(⑦)세액. 숫자가 마지막 열 머리글 오른쪽에 있을 때만
+    적용 세액으로 본다 (⑥당기발생액·③대상세액과 구분, 3차 샘플컴퍼니4 46,680,000은 ⑥이라 제외)."""
+    out = []
+    for pg in doc.find_cont("공제감면세액합계표(갑)"):
+        rows = pg.rows()
+        last_hdr = None
+        for row in rows:
+            hs = [w for w in row if w["text"][:1] in "③④⑤⑥⑦"]
+            if hs:
+                last_hdr = max(hs, key=lambda w: w["x0"])
+                continue
+            if last_hdr is None:
+                continue
+            text = " ".join(w["text"] for w in row)
+            if any(k in nospace(text) for k in ("소계", "합계", "총계")):
+                continue
+            nums = [w for w in row if "," in w["text"] and to_int(w["text"]) is not None]
+            amt = [w for w in nums if w["x1"] > last_hdr["x0"] + 20]
+            if not amt:
+                continue
+            m = re.match(r"^.{0,6}?(?:\(\d{3}\)\s*)?(?P<name>[^\s(].+?)\s*(?P<law>(?:조특법|조세특례제한법|법인세법)\s?제.*?)\s+(?P<code>[0-9A-Z]{3})\s", text + " ")
+            if not m:
+                continue
+            name = re.sub(r"^.{0,3}?\(\d{3}\)", "", nospace(m.group("name")))
+            law = re.sub(r"^(조특법|조세특례제한법)", "「조세특례제한법」 ", nospace(m.group("law")))
+            law = re.sub(r"^법인세법", "「법인세법」 ", law)
+            out.append(Value(name, year, to_int(amt[-1]["text"]), doc.name, "공제감면세액및추가납부세액합계표(갑)", pg.no,
+                             f"코드 {m.group('code')}", note=law))
     return out
 
 
@@ -526,6 +558,7 @@ class YearData:
     losses: list[dict]
     adjustments: dict
     reductions: list[Value]
+    reductions_sum: list
     sga: list[dict]
     ledgers: dict[str, list[LedgerRow]] = field(default_factory=dict)
     settle_bs_prev: dict[str, int] = field(default_factory=dict)  # 결산 재무상태표 전기 열
@@ -558,6 +591,7 @@ def load_year(path) -> YearData:
         losses=loss_carryforward(doc, year),
         adjustments=income_adjustments(doc, year),
         reductions=reductions(doc, year),
+        reductions_sum=reductions_summary(doc, year),
         sga=sga_detail(doc),
     )
     yd.ledgers = {t: ledger(doc, t) for t in LEDGERS}
