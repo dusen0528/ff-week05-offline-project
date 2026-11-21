@@ -171,8 +171,36 @@ def _ledgers(ev: Evidence, y: YearData):
                     file=y.doc.name, year=y.year, form=title, page=bad[0].page, item=title, shown="(빈칸/회색)")
 
 
+def _format_notes(ev: Evidence, y: YearData):
+    """3차: 서식이 달라 읽는 곳이 바뀐 것, 대조할 서식이 없는 것."""
+    if not y.settle_pl and not y.settle_bs:
+        ev.warn("대조 서식 없음", None, "결산 재무상태표·손익계산서가 PDF에 없어 표준재무제표와 서식 간 대조를 하지 못함",
+                file=y.doc.name, year=y.year, form="결산재무제표", page="-", item="재무상태표·손익계산서", shown="(없음)")
+    if y.ledgers.get("가지급금(인정이자명세서)"):
+        r = y.ledgers["가지급금(인정이자명세서)"][0]
+        b39 = y.bs.get(39)
+        same = b39 is not None and b39.value == r.balance
+        ev.warn("다른 서식에서 찾음", None,
+                f"부속명세서에 가지급금명세서가 없어 가지급금 등의 인정이자 조정명세서(을) '계' 줄에서 잔액을 읽음. "
+                f"거래처코드 없음. 표준재무상태표 코드 39(기타당좌자산) {b39.value:,}원과 금액이 "
+                f"{'같음' if same else '다름'} — 이름·금액만으로 같은 항목으로 보지 않음 (Q-20 답변), VIII에는 인정이자 조정명세서 값만 씀" if b39 else
+                "부속명세서에 가지급금명세서가 없어 인정이자 조정명세서(을)에서 읽음",
+                file=y.doc.name, year=y.year, form="가지급금등의인정이자조정명세서(을)", page=r.page,
+                item=f"가지급금 {r.partner}", shown=r.balance)
+    for code, v in y.min_tax.items():
+        t = y.tax.get(code)
+        if t and t.status == CONFIRMED and v.value != t.value:
+            ev.warn("서식 간 차이", v, f"최저한세조정계산서 {v.value:,}원 / 세액조정계산서(별지3) {t.value:,}원 "
+                                      f"(차이 {v.value - t.value:+,}원). 보고서는 별지3 값을 씀")
+    if y.credits and not (y.tax.get("17") and y.tax["17"].value) and not (y.tax.get("19") and y.tax["19"].value):
+        for c in y.credits:
+            ev.warn("다른 서식에서 찾음", c["src"], f"{c['name']} 요공제세액 {c['amount']:,}원 (세액공제조정명세서(3)). "
+                                              "별지3 공제감면세액(⑰·⑲)은 0원이라 당기 공제세액 0원. 서식에 적힌 그대로 VI에 표시 (Q-21)")
+
+
 def validate(ev: Evidence, prev: YearData, cur: YearData):
     for y in (prev, cur):
+        _format_notes(ev, y)
         if y.revenue.status == NEEDS_CHECK:
             ev.warn("필수값 확인 필요", y.revenue, y.revenue.note)
         else:

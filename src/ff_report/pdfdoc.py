@@ -12,15 +12,17 @@ import pdfplumber
 # 서식 이름 → 페이지 판별 규칙 (공백 제거한 텍스트 기준).
 # 페이지 번호가 아니라 서식 제목으로 찾는다 (NFR-2).
 FORMS: dict[str, dict] = {
-    "신고서": {"any": ["법인세과세표준및세액신고서"], "not": ["지방소득세"]},
-    "세액조정계산서": {"any": ["법인세과세표준및세액조정계산서"], "not": ["지방소득세"]},
+    "신고서": {"any": ["법인세과세표준및세액신고서", "re:별지제1호서식[\\]】)]"], "not": ["지방소득세", "지방세법", "조세특례제한법"]},
+    "세액조정계산서": {"any": ["법인세과세표준및세액조정계산서", "re:별지제3호서식[\\]】)]"], "not": ["지방소득세", "지방세법"]},
     "수입금액조정명세서": {"any": ["수입금액조정명세서"], "not": ["조정후"]},
     "표준재무상태표": {"any": ["표준재무상태표"], "not": ["합계표준재무상태표"]},
     "표준손익계산서": {"any": ["표준손익계산서"], "not": []},
-    "자본금과적립금조정명세서(갑)": {"any": ["자본금과적립금조정명세서(갑)"], "not": []},
-    "소득금액조정합계표": {"any": ["소득금액조정합계표"], "not": ["과목별"]},
+    "자본금과적립금조정명세서(갑)": {"any": ["자본금과적립금조정명세서(갑)", "re:별지제50호서식\\(갑\\)"], "not": []},
+    "소득금액조정합계표": {"any": ["소득금액조정합계표", "re:별지제15호서식[\\]】)]"], "not": ["과목별", "부표"]},
     "세액감면신청서": {"any": ["세액감면(면제)신청서"], "not": []},
     "공제감면세액계산서": {"any": ["공제감면세액계산서"], "not": []},
+    "최저한세조정계산서": {"any": ["최저한세조정계산서", "re:별지제4호서식[\\]】)(]"], "not": ["지방세법"]},
+    "세액공제조정명세서(3)": {"any": ["세액공제조정명세서(3)"], "not": []},
     "지방소득세조정계산서": {"any": ["법인지방소득세과세표준및세액조정계산서"], "not": []},
     "결산재무상태표": {"head": "재무상태표", "not": ["표준", "합계"]},
     "결산손익계산서": {"head": "손익계산서", "not": ["표준"]},
@@ -92,7 +94,8 @@ class Page:
 
     @cached_property
     def words(self) -> list[dict]:
-        return self._plumber_page.extract_words(keep_blank_chars=False)
+        # x_tolerance를 좁혀 '150,934,713II.비유동자산'처럼 붙은 두 칸을 나눈다 (3차 서식)
+        return self._plumber_page.extract_words(keep_blank_chars=False, x_tolerance=1.5)
 
     @property
     def width(self) -> float:
@@ -134,8 +137,9 @@ class PdfDoc:
                 # 결산서 제목은 '재 무 상 태 표'처럼 띄어 써 있고 첫 줄에 온다
                 hit = hit and pg.head.find(rule["head"]) < 15
             else:
-                hit = (any(a in pg.flat for a in rule["any"]) and not any(n in pg.flat for n in rule["not"])
-                       and "목차" not in pg.flat[:40])
+                head = pg.flat[:400]  # 서식 번호는 머리에 있다
+                hit = (any((re.search(a[3:], head) if a.startswith("re:") else a in pg.flat) for a in rule["any"])
+                       and not any(n in head for n in rule["not"]) and "목차" not in pg.flat[:40])
             if hit:
                 out.append(pg)
         return out

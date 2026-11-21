@@ -68,8 +68,8 @@ def render(rp, out: Path, issuer: str):
                     c.number_format = "0.00%"
     _sheet(wb, "III.신고상황", ["구분", f"{py}", f"{cy}"],
            [[r["item"], r["prev"], r["cur"]] for r in S["III"]], [30, 18, 18])
-    _sheet(wb, "IV.이월결손금", ["발생 사업연도", "발생액", "감소액", "잔액"],
-           [[r["year"], r["occur"], r["decrease"], f"=B{i}-C{i}"] for i, r in enumerate(S["IV"]["rows"], start=2)]
+    _sheet(wb, "IV.이월결손금", ["발생 사업연도", "발생액", "기공제액", "당기 감소액", "잔액"],
+           [[r["year"], r["occur"], r["prior"], r["decrease"], f"=B{i}-C{i}-D{i}"] for i, r in enumerate(S["IV"]["rows"], start=2)]
            + [[n] for n in S["IV"]["notes"]], [16, 16, 16, 16])
     _sheet(wb, "V.소득금액조정", ["구분", "과목", "금액", "소득처분"],
            [["익금산입", v.item, v.value, v.note] for v in S["V"]["plus"]]

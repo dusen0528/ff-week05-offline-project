@@ -260,11 +260,11 @@ def render(rp, out: Path, font_dir: Path, charts: dict[str, Path], issuer: str):
     E.append(P(f"IV. 이월결손금 ({cy} 사업연도) <font size=8 color='#52514e'>(단위: 원)</font>", "h1"))
     IV = S["IV"]
     if IV["rows"]:
-        rows = [[r["year"], won(r["occur"]), won(r["decrease"]), won(r["balance"])] for r in IV["rows"]]
-        rows.append(["합계", won(sum(r["occur"] for r in IV["rows"])), won(sum(r["decrease"] for r in IV["rows"])),
-                     won(sum(r["balance"] for r in IV["rows"]))])
-        E.append(table(["발생 사업연도", "발생액", f"감소액({cy} 공제)", "잔액"], rows, [W * 0.25] * 4, num_cols=(1, 2, 3),
-                       bold_rows=(len(rows) - 1,)))
+        rows = [[r["year"], won(r["occur"]), won(r["prior"]), won(r["decrease"]), won(r["balance"])] for r in IV["rows"]]
+        rows.append(["합계"] + [won(sum(r[k] for r in IV["rows"])) for k in ("occur", "prior", "decrease", "balance")])
+        E.append(table(["발생 사업연도", "발생액", "기공제액(전기까지)", f"감소액({cy} 공제)", "잔액"], rows, [W * 0.2] * 5,
+                       num_cols=(1, 2, 3, 4), bold_rows=(len(rows) - 1,)))
+        E.append(P("잔액 = 발생액 − 기공제액 − 당기 공제액 (자본금과적립금조정명세서(갑) Ⅱ 기준).", "note"))
         for n in IV["notes"]:
             E.append(P("※ 차이 표시: " + n, "flag"))
         E.append(src_note(IV["rows"][0]["src"], IV["used_src"]))
@@ -301,7 +301,15 @@ def render(rp, out: Path, font_dir: Path, charts: dict[str, Path], issuer: str):
                        [W * 0.32, W * 0.3, W * 0.18, W * 0.2], num_cols=(3,), bold_rows=(len(rows) - 1,)))
         E.append(src_note(*VI["rows"]))
     else:
-        E.append(P("신청한 공제·감면세액이 없습니다.", "body"))
+        E.append(P(f"{cy} 사업연도에 적용된 공제·감면세액이 없습니다 (세액조정계산서 ⑰·⑲ 0원).", "body"))
+    if cur.credits:  # 세액공제조정명세서(3)에 적힌 그대로 (고객 답변 Q-21: 서식에 나와 있는 그대로)
+        rows = [[c["name"], f"{c['year'][:4]}.{c['year'][4:]}", won(c["amount"]), won(VI["form_total"])] for c in cur.credits]
+        E.append(P("세액공제 (세액공제조정명세서(3) 「2. 당기공제세액 및 이월액계산」)", "h2"))
+        E.append(table(["공제 구분", "발생 사업연도", "요공제세액", f"{cy} 공제세액"], rows,
+                       [W * 0.34, W * 0.18, W * 0.24, W * 0.24], num_cols=(2, 3)))
+        E.append(P(f"{cy} 공제세액은 법인세 과세표준 및 세액조정계산서의 공제감면세액(⑰·⑲) 기준입니다. "
+                   "산출세액이 0원이라 공제된 세액이 없습니다.", "note"))
+        E.append(src_note(*[c["src"] for c in cur.credits], cur.tax.get("17")))
 
     # ---- VII. 요약 코멘트
     E.append(PageBreak())

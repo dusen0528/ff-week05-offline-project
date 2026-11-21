@@ -1,0 +1,13 @@
+/sessions/rcw-01uyeuvt8njmuqsscyqsdrg7/mnt/Desktop/ff-week05-offline-project/src/ff_report/charts.py:103: UserWarning: Attempting to set identical low and high xlims makes transformation singular; automatically expanding.
+  ax.set_xlim(0, max(shares) * 1.2)
+Traceback (most recent call last):
+  File "/sessions/rcw-01uyeuvt8njmuqsscyqsdrg7/.venvs/ff/bin/ff-report", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/sessions/rcw-01uyeuvt8njmuqsscyqsdrg7/mnt/Desktop/ff-week05-offline-project/src/ff_report/__init__.py", line 46, in main
+    render_pdf.render(rp, pdf, fonts, ch, rules["issuer"])
+  File "/sessions/rcw-01uyeuvt8njmuqsscyqsdrg7/mnt/Desktop/ff-week05-offline-project/src/ff_report/render_pdf.py", line 227, in render
+    change_text(change(g(prev.pl, 67), g(cur.pl, 67))), pct(g(prev.pl, 67) / g(prev.pl, 1) * 100),
+                                                            ~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~
+ZeroDivisionError: division by zero
+exit=1

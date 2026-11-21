@@ -297,14 +297,15 @@ def _section3(rp: Report) -> list[dict]:
 # ------------------------------------------------------------------ IV 이월결손금 (D-024)
 def _section4(rp: Report) -> dict:
     cur, prev = rp.cur, rp.prev
-    used = g(cur.tax, "07")
     rows, notes = [], []
-    remaining = used
-    for v in cur.losses:
-        dec = NA if is_na(remaining) else min(v.value, remaining)
-        remaining = remaining - dec
-        yymm = v.item[v.item.find("(") + 1:v.item.find(")")].replace("-", "")[:6]
-        rows.append({"year": yymm, "occur": v.value, "decrease": dec, "balance": v.value - dec, "src": v})
+    for r in cur.losses:
+        rows.append({"year": r["year"], "occur": r["발생액"], "prior": r["기공제액"], "decrease": r["당기공제액"],
+                     "dec_total": r["감소계"], "balance": r["잔액"], "src": r["src"]})
+        _eq(rp.ev, f"결손금 {r['year']} 발생 = 감소계 + 잔액", r["발생액"], r["감소계"] + r["잔액"],
+            f"{r['발생액']:,} = {r['감소계']:,} + {r['잔액']:,}")
+    if rows:
+        _eq(rp.ev, "당기 결손금 공제 합계 = 별지3 ②07", sum(r["decrease"] for r in rows), g(cur.tax, "07"),
+            f"{sum(r['decrease'] for r in rows):,} / {g(cur.tax,'07'):,}")
     # 발생액 vs 그 해 세무상 결손금 (FR-4.7)
     for row in rows:
         if row["year"][:4] == str(prev.year):
@@ -340,9 +341,11 @@ def _section8(rp: Report) -> list[dict]:
     sales_p, sales_c = g(prev.pl, 1), g(cur.pl, 1)
     items = []
     # ① 가지급금·가수금 (거래처코드별)
-    for title, acc in [("가지급금명세서", "가지급금"), ("주임종단기채권명세서", "주임종단기채권"), ("가수금명세서", "가수금")]:
-        pr = {r.partner_code: r for r in prev.ledgers.get(title, [])}
-        cr = {r.partner_code: r for r in cur.ledgers.get(title, [])}
+    for title, acc in [("가지급금명세서", "가지급금"), ("가지급금(인정이자명세서)", "가지급금"),
+                       ("주임종단기채권명세서", "주임종단기채권"), ("가수금명세서", "가수금")]:
+        key = lambda r: r.partner_code if r.partner_code != "-" else r.partner
+        pr = {key(r): r for r in prev.ledgers.get(title, [])}
+        cr = {key(r): r for r in cur.ledgers.get(title, [])}
         if not pr and not cr:
             continue
         lines = []
@@ -354,12 +357,14 @@ def _section8(rp: Report) -> list[dict]:
             detail = f" (당기 증가 {c.increase:,}원, 감소 {c.decrease:,}원)" if c and c.increase is not None and c.decrease is not None else ""
             ch = cb - pb
             word = "확인 필요" if is_na(ch) else ("감소" if ch < 0 else "증가")
-            lines.append(f"거래처코드 {code} {name}: {py}년 말 {won(pb)}원 → {cy}년 말 {won(cb)}원, {word} "
+            who = f"거래처코드 {code} {name}" if code.isdigit() else f"{name} (거래처코드 없음 · 인정이자 조정명세서 기준)"
+            lines.append(f"{who}: {py}년 말 {won(pb)}원 → {cy}년 말 {won(cb)}원, {word} "
                          f"{won(abs(ch)) if not is_na(ch) else ''}{'원' if not is_na(ch) else ''}{detail}. "
                          f"{cy}년 말 잔액은 매출액의 {pct(_pct(cb, sales_c))}입니다.")
         page = cur.ledgers[title][0].page if cur.ledgers.get(title) else None
-        items.append({"title": f"{acc} 현황", "lines": lines, "src": f"결산부속명세서 {title} ({cur.doc.name} p{page})"})
-    if not any(prev.ledgers.get(t) or cur.ledgers.get(t) for t in ("가지급금명세서", "주임종단기채권명세서")):
+        src_name = "가지급금 등의 인정이자 조정명세서(을)" if "인정이자" in title else f"결산부속명세서 {title}"
+        items.append({"title": f"{acc} 현황", "lines": lines, "src": f"{src_name} ({cur.doc.name} p{page})"})
+    if not any(prev.ledgers.get(t) or cur.ledgers.get(t) for t in ("가지급금명세서", "가지급금(인정이자명세서)", "주임종단기채권명세서")):
         items.append({"title": "가지급금 현황", "lines": ["전기·당기 모두 결산부속명세서에 가지급금 명세가 없습니다."],
                       "src": "결산부속명세서"})
     # 대표자·임원 차입금 (가수금 성격) — 표준재무상태표 236(단기)·292(장기)
